@@ -15,7 +15,7 @@ public class KVClient {
     public KVClient(String address, int port) {
         try {
             serverConn = SocketChannel.open(new InetSocketAddress(address, port));
-            output = ByteBuffer.allocate(256);
+            output = ByteBuffer.allocate(1024);
         } catch (IOException e) {
             System.err.println("[ERROR] Unable to initialize client");
             throw new RuntimeException(e);
@@ -23,19 +23,24 @@ public class KVClient {
     }
 
     public void sendMessage(String key, String value) {
-
-        var charBuf = output.asCharBuffer();
-
-        charBuf.append(key);
-        charBuf.append("::");
-        charBuf.append(value);
+        var message = KVMessage.convertToMessage(key, value);
+        message.flip();
 
         try {
-            serverConn.write(output);
+            serverConn.write(message);
+            System.out.println("Message Sent");
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
+    }
 
+
+    public void close() {
+        try {
+            serverConn.close();
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
     }
 
 }
