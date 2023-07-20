@@ -6,10 +6,11 @@ import java.nio.channels.ClosedChannelException;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.SocketChannel;
-import java.nio.charset.StandardCharsets;
 import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class KVServerListener implements Runnable{
 
@@ -19,13 +20,16 @@ public class KVServerListener implements Runnable{
 
     private final Selector selector;
 
+    private final ExecutorService worker;
+
     public KVServerListener(ConcurrentSkipListMap<byte[], byte[]> store) {
         pendingConnections = new ConcurrentLinkedQueue<>();
         kvStore = store;
+        worker = Executors.newSingleThreadExecutor();
         try {
             selector = Selector.open();
         } catch (IOException e) {
-            System.err.println("[ERROR] Unable to initialize KVServerListener");
+            System.err.println("[ERROR] Unable to initialize KVServerListener | " + e.getMessage());
             throw new RuntimeException(e);
         }
     }
@@ -38,19 +42,17 @@ public class KVServerListener implements Runnable{
     @Override
     public void run() {
 
-
-
         while(true) {
 
-            SocketChannel newConn = pendingConnections.poll();
-            while(newConn != null) {
+            SocketChannel newConnection = pendingConnections.poll();
+            while(newConnection != null) {
                 try {
-                    newConn.register(selector, SelectionKey.OP_READ);
+                    newConnection.register(selector, SelectionKey.OP_READ, new ClientBuffer());
                 } catch (ClosedChannelException err) {
                     System.err.println("[ERROR] " + err.getMessage());
                 }
                 System.out.println("[INFO] Client connection accepted");
-                newConn = pendingConnections.poll();
+                newConnection = pendingConnections.poll();
             }
 
 
@@ -66,13 +68,18 @@ public class KVServerListener implements Runnable{
                 selectedKeys.remove(key);
 
                 if(key.isReadable()) {
+
                     var channel = (SocketChannel)key.channel();
-                    ByteBuffer input = ByteBuffer.allocate(256);
+
+                    var clientBuf = (ClientBuffer)key.attachment();
+
+                    ByteBuffer input = clientBuf.inputByteBuf;
 
                     int readBytes;
 
                     try{
                         readBytes = channel.read(input);
+                        System.out.println("Read " + readBytes + " bytes");
                     } catch (IOException err) {
                         err.printStackTrace();
                         System.err.println("[ERROR] " + err.getMessage());
@@ -96,9 +103,11 @@ public class KVServerListener implements Runnable{
                         continue;
                     }
 
-                    input.flip();
-
-                    System.out.println(StandardCharsets.UTF_8.decode(input));
+                    if(clientBuf.messageReady()) {
+                        var msgPair = clientBuf.readMessage();
+                        System.out.println("Key: " + new String(msgPair[0]));
+                        System.out.println("Value: " + new String(msgPair[1]));
+                    }
 
                 }
             }

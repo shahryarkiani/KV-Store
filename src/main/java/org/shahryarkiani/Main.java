@@ -19,14 +19,10 @@ public class Main {
                 int port = Integer.parseInt(args[1]);
                 var client = new KVClient(args[0], port);
 
-                client.sendMessage("test", "wow it works");
-
-                Thread.sleep(15 * 1000);
+                //TODO: Implement client console read/write functionality
 
             } catch (NumberFormatException e) {
                 System.err.println("[ERROR] Unable to parse port number");
-                throw new RuntimeException(e);
-            } catch (InterruptedException e) {
                 throw new RuntimeException(e);
             }
         }

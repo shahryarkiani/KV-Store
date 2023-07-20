@@ -118,8 +118,6 @@ public class KVServer implements Runnable {
 
                         handlers[curHandler++].addConnection(newConnection);
 
-                        System.out.println("[INFO] Sending new connection to handlers");
-
                     } catch (IOException err) {
                         err.printStackTrace();
                         System.err.println("[ERROR] " + err.getMessage());
