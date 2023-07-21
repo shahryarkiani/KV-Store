@@ -7,6 +7,10 @@ public class KVMessage {
 
 
 
+    public enum MessageType {
+        PUT, GET, DELETE
+    }
+
     private static final int MAX_LENGTH = 65536 - 1;
 
     /*
@@ -15,27 +19,43 @@ public class KVMessage {
     * | Key Len | Value Len |    key        |   Value         |
     *
     * This method simply converts a key value string pair into the message format detailed above
-    * The encoding used is ascii, java default is utf-8, but utf-8 values up to 127 map to ascii
+    * The encoding used is ascii, java default is utf-8, but utf-8 values up to 127 map to ascii anyways
+    *
+    * If the value length bits are all 0, the message is a GET for the key
+    * If the value length bits are all 1, the message is a DELETE for the key
+    * The default is a PUT for the Key and Value provided
+    *
     */
-    public static ByteBuffer convertToMessage(String key, String value) {
-        if(key.length() > (MAX_LENGTH) || value.length() > MAX_LENGTH)
-            throw new IllegalArgumentException("The message size is too long");
+    public static ByteBuffer convertToMessage(String key, String value, MessageType msgType) {
 
-        ByteBuffer message = ByteBuffer.allocateDirect(4 + key.length()  + value.length());
-        message.clear();
+        int keyLength = key.length();
+        int valueLength = switch (msgType) {
+            case GET -> 0;
+            case DELETE -> -1;
+            case PUT -> value.length();
+        };
 
-        message.putShort((short) key.length());
-        message.putShort((short) value.length());
+        var message = ByteBuffer.allocateDirect(4 + keyLength + (valueLength == -1 ? 0 : valueLength));
+
+        message.putShort((short) (keyLength & 0xFFFF));
+        message.putShort((short) (valueLength & 0xFFFF));
         message.put(key.getBytes(StandardCharsets.US_ASCII));
-        message.put(value.getBytes(StandardCharsets.US_ASCII));
-
+        if(msgType == MessageType.PUT)
+            message.put(value.getBytes(StandardCharsets.US_ASCII));
 
         return message;
     }
-
     public static byte[][] decodeMessage(ByteBuffer msg) {
-        short keyLength = msg.getShort();
-        short valueLength = msg.getShort();
+        int keyLength = 0xFFFF & msg.getShort();
+        int valueLength = 0xFFFF & msg.getShort();
+
+        if(valueLength == 0 || valueLength == MAX_LENGTH) {
+            byte[] keyBytes = new byte[keyLength];
+
+            msg.get(keyBytes, 0, keyLength);
+
+            return new byte[][]{ keyBytes, null};
+        }
 
         byte[] keyBytes = new byte[keyLength];
         byte[] valueBytes = new byte[valueLength];

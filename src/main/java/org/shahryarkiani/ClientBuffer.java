@@ -33,6 +33,14 @@ public class ClientBuffer {
 
     }
 
+    public KVMessage.MessageType getMessageType() {
+        return switch (inputByteBuf.getShort(2)) {
+            case 0 -> KVMessage.MessageType.GET;
+            case -1 -> KVMessage.MessageType.DELETE;
+            default -> KVMessage.MessageType.PUT;
+        };
+    }
+
     public byte[][] readMessage() {
         inputByteBuf.flip();
 
