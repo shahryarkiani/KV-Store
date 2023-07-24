@@ -7,6 +7,7 @@ import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.util.Set;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentSkipListMap;
 
 public class KVServer implements Runnable {
@@ -42,8 +43,10 @@ public class KVServer implements Runnable {
 
         handlers = new KVServerListener[eventGroupSize];
 
+        ConcurrentLinkedQueue<SocketChannel> connectionsQueue = new ConcurrentLinkedQueue<>();
+
         for(int i = 0; i < handlers.length; i++) {
-            handlers[i] = new KVServerListener(kvStore);
+            handlers[i] = new KVServerListener(kvStore, connectionsQueue);
         }
 
         curHandler = 0;
@@ -112,9 +115,11 @@ public class KVServer implements Runnable {
                 if(key.isAcceptable()) {
                     try {
                         SocketChannel newConnection = listener.accept();
-                        newConnection.configureBlocking(false);
+
 
                         curHandler %= handlers.length;
+
+                        System.out.println("Sent connection to Thread-" + curHandler);
 
                         handlers[curHandler++].addConnection(newConnection);
 
