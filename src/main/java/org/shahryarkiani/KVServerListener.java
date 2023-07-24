@@ -2,18 +2,22 @@ package org.shahryarkiani;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.channels.ClosedChannelException;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.SocketChannel;
-import java.util.Set;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.ConcurrentSkipListMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Queue;
+import java.util.concurrent.*;
+
 
 public class KVServerListener implements Runnable{
 
+    /*
+    * The main server can't register new sockets to the selector directly since it might block,
+    * so it submits new connections to this queue
+     */
     private final ConcurrentLinkedQueue<SocketChannel> pendingConnections;
 
     private final ConcurrentSkipListMap<byte[], byte[]> kvStore;
@@ -22,8 +26,8 @@ public class KVServerListener implements Runnable{
 
     private final ExecutorService worker;
 
-    public KVServerListener(ConcurrentSkipListMap<byte[], byte[]> store) {
-        pendingConnections = new ConcurrentLinkedQueue<>();
+    public KVServerListener(ConcurrentSkipListMap<byte[], byte[]> store, ConcurrentLinkedQueue<SocketChannel> pendingConnections) {
+        this.pendingConnections = pendingConnections;
         kvStore = store;
         worker = Executors.newSingleThreadExecutor();
         try {
@@ -42,30 +46,73 @@ public class KVServerListener implements Runnable{
     @Override
     public void run() {
 
+        //These need to persist between while loops
+        Queue<Future<Result>> completableTasks = new ArrayDeque<>();
+
         while(true) {
 
             SocketChannel newConnection = pendingConnections.poll();
             while(newConnection != null) {
                 try {
-                    newConnection.register(selector, SelectionKey.OP_READ, new ClientBuffer());
-                } catch (ClosedChannelException err) {
+                    newConnection.configureBlocking(false);
+                    newConnection.register(selector, SelectionKey.OP_READ | SelectionKey.OP_WRITE, new ClientBuffer());
+                } catch (IOException err) {
                     System.err.println("[ERROR] " + err.getMessage());
                 }
-                System.out.println("[INFO] Client connection accepted");
+                System.out.println("[INFO] Client connection accepted on " + Thread.currentThread().getName());
                 newConnection = pendingConnections.poll();
             }
 
 
             try {
-                selector.select(100);
+                //No timeout, if there's nothing ready for I/O we go through with the rest of the loop
+                selector.select(1);
             } catch (IOException err) {
                 throw new RuntimeException(err);
             }
 
-            Set<SelectionKey> selectedKeys = selector.selectedKeys();
+            var iter = selector.selectedKeys().iterator();
 
-            for(var key : selectedKeys) {
-                selectedKeys.remove(key);
+
+            while(iter.hasNext()) {
+                var key = iter.next();
+                iter.remove();
+
+
+                if(key.isWritable()) {
+                    var channel = (SocketChannel) key.channel();
+
+                    var clientBuf = (ClientBuffer) key.attachment();
+
+                    ByteBuffer output = clientBuf.outputByteBuf;
+
+                    output.flip();
+
+                    try {
+                        channel.write(output);
+                    } catch (IOException err) {
+                        err.printStackTrace();
+                        System.err.println("[ERROR] " + err.getMessage());
+                        key.cancel();
+                        try {
+                            channel.close();
+                        } catch (IOException err2) {
+                            err.printStackTrace();
+                            System.err.println("[ERROR] " + err2.getMessage());
+                        }
+                        continue;
+                    }
+
+                    if(output.remaining() == 0) {
+                        //We wrote everything out, we don't need to listen for readable
+                        key.interestOps(SelectionKey.OP_READ);
+                    }
+
+                    output.compact();
+
+
+
+                }
 
                 if(key.isReadable()) {
 
@@ -79,7 +126,6 @@ public class KVServerListener implements Runnable{
 
                     try{
                         readBytes = channel.read(input);
-                        System.out.println("Read " + readBytes + " bytes");
                     } catch (IOException err) {
                         err.printStackTrace();
                         System.err.println("[ERROR] " + err.getMessage());
@@ -103,17 +149,100 @@ public class KVServerListener implements Runnable{
                         continue;
                     }
 
-                    if(clientBuf.messageReady()) {
+                    List<Task> tasks = new ArrayList<>(5);
+
+                    //The socket might have multiple messages to read in it
+                    while(clientBuf.messageReady()) {
+                        var msgType = clientBuf.getMessageType();
                         var msgPair = clientBuf.readMessage();
-                        System.out.println("Key: " + new String(msgPair[0]));
-                        System.out.println("Value: " + new String(msgPair[1]));
+
+                        tasks.add(new Task(msgType, msgPair[0], msgPair[1]));
                     }
 
+
+                    //We want to do all the tasks as one unit of work to ensure that when the future is complete
+                    //there won't be more writes to the clients buffer
+                    if(!tasks.isEmpty()) {
+                        var futureResult = worker.submit(() -> {
+                            byte[][] results = new byte[tasks.size()][];
+                            for(int i = 0; i < tasks.size(); i++) {
+                                Task t = tasks.get(i);
+                                switch (t.type()) {
+                                    case GET -> {
+                                        var result = kvStore.get(t.key());
+                                        results[i] = result;
+                                    }
+                                    case PUT -> {
+                                        kvStore.put(t.key(), t.value());
+                                        results[i] = t.value();
+                                    }
+                                    case DELETE -> {
+                                        var result = kvStore.remove(t.key());
+                                        results[i] = result;
+                                    }
+                                }
+
+                            }
+
+                            return new Result(key, results);
+                        });
+
+                        completableTasks.add(futureResult);
+
+                    } //tasks is empty
+
+                }//Read operation
+            }
+
+            //Now we handle the tasks that have been completed
+            int tasksCount = completableTasks.size();
+
+            //we only want to poll for the amount of tasks that were initially in the queue
+            //not until it's empty since we might requeue tasks that aren't done
+            for(int i = 0; i < tasksCount; i++) {
+                var curTask = completableTasks.poll();
+                if(!curTask.isDone()) {
+                    completableTasks.add(curTask);
+                    break;
+                    //it's a single thread worker executor, so the tasks are guaranteed to execute sequentially
+                    //a queue is FIFO, so if a task isn't done, the stuff submitted after won't be either
+                }
+
+                Result result;
+
+                try {
+                    result = curTask.get();
+                } catch (InterruptedException | ExecutionException e) {
+                    e.printStackTrace();
+                    System.out.println("[ERROR] " + e.getMessage());
+                    continue;
+                }
+
+                var key = result.key();
+                byte[][] responseBytesList = result.result();
+
+                key.interestOps(SelectionKey.OP_READ | SelectionKey.OP_WRITE);
+
+                ByteBuffer outputBuffer = ((ClientBuffer)key.attachment()).outputByteBuf;
+
+                for(var responseByte : responseBytesList) {
+                    if(responseByte == null) {
+                        outputBuffer.putShort((short) -1);
+                        continue;
+                    }
+                    outputBuffer.putShort((short)(responseByte.length & 0xFFFF));
+                    outputBuffer.put(responseByte);
                 }
             }
 
 
-        }
+
+        }//While loop
 
     }
 }
+
+
+record Task(KVMessage.MessageType type, byte[] key, byte[] value) {}
+
+record Result(SelectionKey key, byte[][] result) {}
