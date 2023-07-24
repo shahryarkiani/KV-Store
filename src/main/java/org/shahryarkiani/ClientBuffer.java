@@ -4,8 +4,10 @@ import java.nio.ByteBuffer;
 
 public class ClientBuffer {
 
+    //This is what the client sent to the server
     protected final ByteBuffer inputByteBuf;
 
+    //This is what the server needs to send to the client
     protected final ByteBuffer outputByteBuf;
 
     public ClientBuffer() {
