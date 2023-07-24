@@ -22,24 +22,65 @@ public class KVClient {
         }
     }
 
-    public void sendMessage(String key, String value) {
-        var message = KVMessage.convertToMessage(key, value);
+    public String put(String key, String value) {
+        var message = KVMessage.convertToMessage(key, value, KVMessage.MessageType.PUT);
+        return sendRequest(message);
+    }
+
+    public String get(String key) {
+        var message = KVMessage.convertToMessage(key, null, KVMessage.MessageType.GET);
+        return sendRequest(message);
+    }
+
+
+
+
+    public String delete(String key) {
+        var message = KVMessage.convertToMessage(key, null, KVMessage.MessageType.DELETE);
+        return sendRequest(message);
+    }
+
+    private String sendRequest(ByteBuffer message) {
         message.flip();
 
         try {
             serverConn.write(message);
-            System.out.println("Message Sent");
+            readResponse(output, serverConn);
+
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
-    }
 
+        output.flip();
+
+        String responseValue = KVMessage.decodeResponse(output);
+
+        output.compact();
+
+        return responseValue;
+    }
 
     public void close() {
         try {
             serverConn.close();
         } catch (IOException e) {
             throw new RuntimeException(e);
+        }
+    }
+
+    public static void readResponse(ByteBuffer output, SocketChannel serverConn) throws IOException {
+        serverConn.read(output);
+
+        int requiredLengthShort = output.getShort(0);
+
+        if(requiredLengthShort != -1) {
+            int requiredBytes = 0xFFFF & requiredLengthShort;
+            int readBytes = output.position();
+
+            while(readBytes < requiredBytes) {
+                serverConn.read(output);
+                readBytes = output.position();
+            }
         }
     }
 
