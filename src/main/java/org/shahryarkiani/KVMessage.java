@@ -25,6 +25,7 @@ public class KVMessage {
     * If the value length bits are all 1, the message is a DELETE for the key
     * The default is a PUT for the Key and Value provided
     *
+    * This also means that we can't put an empty value
     */
     public static ByteBuffer convertToMessage(String key, String value, MessageType msgType) {
 
@@ -35,6 +36,7 @@ public class KVMessage {
             case PUT -> value.length();
         };
 
+        //Unnecessary allocation, this method should really be taking in a bytebuffer to write to
         var message = ByteBuffer.allocateDirect(4 + keyLength + (valueLength == -1 ? 0 : valueLength));
 
         message.putShort((short) (keyLength & 0xFFFF));
@@ -64,6 +66,21 @@ public class KVMessage {
         msg.get(valueBytes, 0, valueLength);
 
         return new byte[][]{ keyBytes, valueBytes };
+    }
+
+    public static String decodeResponse(ByteBuffer response) {
+        int shortValueLength = response.getShort();
+
+        if(shortValueLength == -1)
+            return null;
+
+        int valueLength = 0xFFFF & shortValueLength;
+
+        byte[] valueBytes = new byte[valueLength];
+
+        response.get(valueBytes, 0, valueLength);
+
+        return new String(valueBytes);
     }
 
 }
