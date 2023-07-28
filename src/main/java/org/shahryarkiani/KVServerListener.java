@@ -194,19 +194,19 @@ public class KVServerListener implements Runnable{
                 }//Read operation
             }
 
-            //Now we handle the tasks that have been completed
-            int tasksCount = completableTasks.size();
 
-            //we only want to poll for the amount of tasks that were initially in the queue
-            //not until it's empty since we might requeue tasks that aren't done
-            for(int i = 0; i < tasksCount; i++) {
-                var curTask = completableTasks.poll();
-                if(!curTask.isDone()) {
-                    completableTasks.add(curTask);
+
+            while(!completableTasks.isEmpty()) {
+
+                var curTask = completableTasks.peek();
+
+                //it's a single thread worker executor, so the tasks are guaranteed to execute sequentially
+                //a queue is FIFO, so if a task isn't done, the stuff submitted after won't be either
+                if(!curTask.isDone())
                     break;
-                    //it's a single thread worker executor, so the tasks are guaranteed to execute sequentially
-                    //a queue is FIFO, so if a task isn't done, the stuff submitted after won't be either
-                }
+
+                //the task we peeked is done, so we remove it
+                completableTasks.poll();
 
                 Result result;
 
@@ -233,7 +233,8 @@ public class KVServerListener implements Runnable{
                     outputBuffer.putShort((short)(responseByte.length & 0xFFFF));
                     outputBuffer.put(responseByte);
                 }
-            }
+
+            }//handle completed tasks loop
 
 
 
